@@ -1,4 +1,5 @@
 import os
+import cv2
 import logging
 import numpy as np
 import paddle as pp
@@ -50,6 +51,7 @@ class VOCDataset(pp.io.Dataset):
         return gt_boxes[random_idx], gt_cls[random_idx]
 
     def __getitem__(self, idx):
+        #
         record_info = self.record_info_list[idx]
         im_path = record_info["im_path"]
         h = record_info["im_h"]
@@ -57,17 +59,29 @@ class VOCDataset(pp.io.Dataset):
         gt_cls = record_info["gt_class"]
         gt_xywh = record_info["gt_xywh"]
 
-        hwc_im = np.array(
+        #
+        hwc_im = np.asarray(
             Image.open(os.path.join(self.image_dir, im_path)).convert("RGB"), dtype=np.uint8)
+
         gt_xywh = gt_xywh.astype(np.float32)
         gt_xywh[..., 0::2] /= float(w)
         gt_xywh[..., 1::2] /= float(h)
         gt_cls = gt_cls.astype(np.int64)
 
+        #
         if self.transform is not None:
             hwc_im, gt_xywh, gt_cls = self.transform(hwc_im, gt_xywh, gt_cls)
         gt_xywh, gt_cls = self.random_shuffle_boxes(gt_xywh, gt_cls)
-        return hwc_im, gt_xywh, gt_cls, (h, w)
+
+        min_keep = min(self.cfg.MAX_BOX_NUM, len(gt_xywh))
+
+        out_xywh = np.zeros((self.cfg.MAX_BOX_NUM, 4), dtype=gt_xywh.dtype)
+        out_cls = np.zeros((self.cfg.MAX_BOX_NUM, ), dtype=gt_cls.dtype)
+
+        out_xywh[:min_keep] = gt_xywh[:min_keep]
+        out_cls[:min_keep] = gt_cls[:min_keep]
+
+        return hwc_im, out_xywh, out_cls, np.array((h, w), dtype=np.int)
 
     def __len__(self):
         return len(self.record_info_list)
@@ -78,22 +92,70 @@ class VOCDataset(pp.io.Dataset):
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.append("..")
+    from cfg import Cfg
+    sys.path.append("../utils/")
+    from vis import show_image2xywh_list, show_image2xywh_one
+
     import transforms as T
+    import paddle as pp
+    import matplotlib.pyplot as plt
 
     root_dir = r"D:\workspace\DataSets\det\Insect"
     list_path = r"D:\workspace\DataSets\det\Insect\ImageSets\train_list.txt"
     label_path = r"D:\workspace\DataSets\det\Insect\ImageSets\label_list.txt"
+
     transforms = T.Compose(
-        T.RandomDestory(),
-        T.RandomExpand(),
-        T.RandomCrop(),
-        T.RandomHorizontalFlip(),
-        T.RandomInterpolationZoom(608)
+        # T.RandomDestory(),
+        # T.RandomExpand(),
+        # T.RandomCrop(),
+        # T.RandomHorizontalFlip(),
+        T.RandomInterpolationZoom(Cfg.HW_SIZE),
+        T.Normalize(),
+        T.Transpose(),
     )
 
-    voc_dataset = VOCDataset(
-        [], root_dir, list_path, label_path, transform=transforms)
+    dataset = VOCDataset(Cfg,
+                         root_dir, list_path, label_path,
+                         transform=transforms)
 
+    dataloader = pp.io.DataLoader(dataset,
+                                  batch_size=Cfg.BATCH_SIZE,
+                                  shuffle=True, num_workers=0)
+    for i, (chw_im, gt_xywh, gt_cls, scale) in enumerate(dataloader):
+        print(i, chw_im.shape, gt_xywh.shape, gt_cls.shape, scale.shape)
+        break
+
+    rows = 3
+    cols = 3
+    N = rows * cols
+    # [N, C, H, W] -> [N, H, W, C]
+    hwc_im_little = chw_im[:N].numpy().transpose((0, 2, 3, 1))
+    # hwc_im_little = chw_im[:N].numpy()
+    gt_xywh = gt_xywh[:N].numpy()
+
+    _, h, w, _ = hwc_im_little.shape
+    print(h, w)
+    gt_xywh[..., 0::2] *= float(w)
+    gt_xywh[..., 1::2] *= float(h)
+    # gt_xywh = gt_xywh.astype(np.int)
+    print(gt_xywh)
+
+    show_image2xywh_list(list(zip(hwc_im_little, gt_xywh)), rows, cols)
+
+    """
     for i in range(100):
-        hwc_im, gt_xywh, gt_cls, scale = voc_dataset.__getitem__(i)
+        hwc_im, gt_xywh, gt_cls, scale = dataset.__getitem__(i)
         print(i, hwc_im.shape, gt_xywh.shape, gt_cls.shape, scale)
+        break
+
+    plt.figure(figsize=(10, 6))
+    h, w, _ = hwc_im.shape
+    gt_xywh[..., 0::2] *= float(w)
+    gt_xywh[..., 1::2] *= float(h)
+    print(gt_xywh)
+    show_image2xywh_one(hwc_im.astype(np.uint8), gt_xywh.astype(np.int))
+    """
+
+    plt.show()

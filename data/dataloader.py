@@ -85,11 +85,8 @@ def get_multithread_data_loader(label_list_txt: str, image_label_path_mapper_txt
     return paddle.reader.xmap_readers(get_data_fn, reader, num_thread, buffer_size)
 
 
-​
-
-
 def test_data_loader(datadir,
-                     batch_size=10, test_image_size=608
+                     batch_size=10, test_image_size=608,
                      mean=(0.485, 0.456, 0.406),
                      std=(0.229, 0.224, 0.225)):
     """

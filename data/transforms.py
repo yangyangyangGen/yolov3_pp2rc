@@ -28,9 +28,50 @@ class Compose(object):
 
 class Transform(metaclass=ABCMeta):
     @abstractmethod
-    def __call__(self, hwc_img, gt_xywh=None, gt_clas=None):
+    def __call__(self, hwc_img, gt_xywh=None, gt_cls=None):
+        """
+        @params:
+            hwc_img: np.ndarray, shape [H, W, C], dtype float or uint8.
+            gt_xywh: np.ndarray, shape [N, 4], do normalize so it's dtype should be float and value range [0, 1]
+            gt_cls:  np.ndarray, shape [N, ] dtype int.
+        """
         raise NotImplementedError(
             f"'__call__' not implement in class {self.__class__.__name__}")
+
+
+class Normalize(Transform):
+    def __init__(self,
+                 mean=(0.,) * 3, std=(1.,) * 3,
+                 scale=255, xywh_do_norm=False):
+        super(Normalize, self).__init__()
+        assert type(mean) in (list, tuple) and type(std) in (list, tuple), \
+            f"type mean is: {type(mean)}, type std is: {type(std)}"
+
+        self.scale = scale
+        self.xywh_do_norm = xywh_do_norm
+        self.mean = np.array(mean, dtype=np.float32)
+        self.std = np.array(std, dtype=np.float32)
+
+    def __call__(self, hwc_image, gt_xywh=None, gt_cls=None):
+        h, w = hwc_image.shape[:2]
+        hwc_image = hwc_image.astype(np.float32)
+        hwc_image = (hwc_image / self.scale - self.mean) / self.std
+
+        if self.xywh_do_norm:
+            gt_xywh[..., 0::2] /= float(w)
+            gt_xywh[..., 1::2] /= float(h)
+        return hwc_image, gt_xywh, gt_cls
+
+
+class Transpose(Transform):
+    def __init__(self, order=(2, 0, 1)):
+        super(Transpose, self).__init__()
+        assert type(order) in (tuple, list)
+        self.order = order
+
+    def __call__(self, hwc_img, gt_xywh=None, gt_cls=None):
+        chw_img = np.transpose(hwc_img, self.order)
+        return chw_img, gt_xywh, gt_cls
 
 
 class RandomDestory(Transform):
@@ -120,8 +161,8 @@ class RandomExpand(Transform):
 
         out_img[offset_y: offset_y+h, offset_x: offset_x+w, :] = hwc_img
 
-        gt_xywh[:, 0] = gt_xywh[:, 0] * w + offset_x / float(ow)
-        gt_xywh[:, 1] = gt_xywh[:, 1] * h + offset_y / float(oh)
+        gt_xywh[:, 0] = (gt_xywh[:, 0] * w + offset_x) / float(ow)
+        gt_xywh[:, 1] = (gt_xywh[:, 1] * h + offset_y) / float(oh)
         gt_xywh[:, 2] = gt_xywh[:, 2] / float(ratio_x)
         gt_xywh[:, 3] = gt_xywh[:, 3] / float(ratio_y)
 
@@ -130,6 +171,7 @@ class RandomExpand(Transform):
 
 class RandomCrop(Transform):
     """
+        TODO: 添加最大物体保留比， 即： 一个物体 X% 超出了原图的情况下 才进行remove.
         随机裁剪
 
     @params:
@@ -226,11 +268,10 @@ class RandomCrop(Transform):
                     crop_boxes.append((crop_x, crop_y, crop_w, crop_h))
                     break
 
-        # crop
         while crop_boxes:
             crop_box = crop_boxes.pop(random.randint(0, len(crop_boxes) - 1))
-            out_crop_boxes, out_crop_labels, life_box_num = \
-                self.crop_bbox_x1y1wh(gt_xywh, gt_cls, crop_box, (h, w))
+            out_crop_boxes, out_crop_labels, life_box_num = self.crop_bbox_x1y1wh(
+                gt_xywh, gt_cls, crop_box, (h, w))
 
             if life_box_num < self.min_life_box:
                 continue
@@ -252,7 +293,7 @@ class RandomInterpolationZoom(Transform):
         super(RandomInterpolationZoom, self).__init__()
         assert inter_method_tuple
         self.inter_method_tuple = inter_method_tuple
-        if isinstance(size, tuple):
+        if isinstance(size, Iterable):
             assert len(size) == 2
             self.hw = tuple(size)
         else:
